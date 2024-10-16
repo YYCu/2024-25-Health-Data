@@ -1,0 +1,114 @@
+# load data
+dt2015 <- read_csv("/Users/cyy/Desktop/archive/2015.csv")
+
+# extract the columns connected with high blood pressure
+hbp2015 <- dt2015[,c("BPHIGH4", "BPMEDS", "_RFHYPE5", "_MICHD")]
+
+# change value of "BPHIGH4"
+hbp2015$BPHIGH4 <- factor(hbp2015$BPHIGH4, levels = c(1, 2, 3, 4, 7, 9, "BLANK"), labels = c("Yes", "Yes during pregnancy", "No", "Pre-hypertensive", "Don't know", "Refused", "Not Asked or Missing"))
+
+# change value of "_MICHD"
+hbp2015$`_MICHD` <- factor(hbp2015$`_MICHD`, levels = c(1, 2, "BLANK"), labels = c("Yes", "No", "Not Asked or Missing"))
+
+# Calculate the frequency and percentages, removing 'Not Asked or Missing'.
+table_BPHIGH4 <- table(hbp2015$BPHIGH4)
+table_BPHIGH4 <-  table_BPHIGH4[names(table_BPHIGH4) != "Not Asked or Missing"] 
+percentages_BPHIGH4 <- round(100 * prop.table(table_BPHIGH4),2)
+
+# Plot the histogram
+barplt_BPHIGH4 <- barplot(table_BPHIGH4, main="Histogram of having high blood pressure", col="skyblue", names.arg=names(table_BPHIGH4), ylim=c(0, max(table_BPHIGH4) * 1.2), ylab="Frequency")
+
+# calculate numbers
+n_heart = nrow(filter(hbp2015, hbp2015$`_MICHD` == "Yes"))
+
+n_hbp = nrow(filter(hbp2015, hbp2015$BPHIGH4 == "Yes"))
+
+n_no_hbp = nrow(filter(hbp2015, hbp2015$BPHIGH4 == "No"))
+
+n_yes = nrow(filter(hbp2015, hbp2015$BPHIGH4 == "Yes" & hbp2015$`_MICHD` == "Yes"))
+
+n_yes_preg = nrow(filter(hbp2015, hbp2015$BPHIGH4 == "Yes during pregnancy" & hbp2015$`_MICHD` == "Yes"))
+
+n_pre = nrow(filter(hbp2015, hbp2015$BPHIGH4 == "Pre-hypertensive" & hbp2015$`_MICHD` == "Yes"))
+ 
+n_no  = nrow(filter(hbp2015, hbp2015$BPHIGH4 == "No" & hbp2015$`_MICHD` == "Yes"))
+
+n_unknown <- nrow(filter(hbp2015, 
+                         hbp2015$BPHIGH4 == "Don't know" | 
+                         hbp2015$BPHIGH4 == "Refused" | 
+                         hbp2015$BPHIGH4 == "Not Asked or Missing" & 
+                         hbp2015$`_MICHD` == "Yes"))
+                         
+percent_hbp_heart <- round(c(
+  n_yes / n_heart,
+  n_yes_preg / n_heart,
+  n_pre / n_heart,
+  n_no / n_heart,
+  n_unknown / n_heart
+) * 100, 2)
+
+percent_heart_hbp <- round(c(
+  n_heart / n_hbp,
+  n_heart / n_no) * 100, 2)
+
+labels1 <- c("Yes", "Yes(Preg)", "Pre-hyper", "No", "Unknown")
+labels2 <- c("Yes",  "No")
+
+
+bar_percentage1 <- barplot(percent_hbp_heart, 
+        main = "High Blood Pressure and Heart Disease", 
+        names.arg = labels1, 
+        col = "skyblue", 
+        ylim = c(0, max(percent_hbp_heart) * 1.2), 
+        ylab = "Percentage (%)",
+        las = 2)
+
+
+text(x = bar_percentage, y = percent_hbp_heart, 
+     label = paste0(percent_heart_hbp, "%"), 
+     pos = 3, cex = 0.8, col = "black")
+
+
+bar_percentage2 <- barplot(percent_heart_hbp, 
+        main = "High Blood Pressure and Heart Disease", 
+        names.arg = labels2, 
+        col = "skyblue", 
+        ylim = c(0, max(percent_heart_hbp) * 1.2), 
+        ylab = "Percentage (%)",
+        las = 2)
+
+
+text(x = bar_percentage, y = percent_heart_hbp, 
+     label = paste0(percent_heart_hbp, "%"), 
+     pos = 3, cex = 0.8, col = "black")
+
+## The proportion of missing value for the variable
+# 第一组：gender and age
+df_personal_factor1 <- dt2015[, c(207,206,53,258,259,257)]
+vis_miss(df_personal_factor1, warn_large_data = FALSE)
+
+dt_missing$trans <- ifelse(is.na(dt2015$TRNSGNDR), 1, 0)
+
+# 第一组：weight and height
+df_personal_factor2 <- dt2015[, c(65,262,265,66,260,261)]
+vis_miss(df_personal_factor2, warn_large_data = FALSE)
+
+# 第二组：smoking
+df_lfstyle_factor1 <- dt2015[, c(270,76,269,75,77,78,79)]
+vis_miss(df_lfstyle_factor1, warn_large_data = FALSE)
+
+# 第二组：drinking
+df_lfstyle_factor2 <- dt2015[, c(274,273,272,275,271,80,81,82,83)]
+vis_miss(df_lfstyle_factor2, warn_large_data = FALSE)
+
+# 第三组: Cholesterol and High Blood Pressure
+df_physical_factor1 <- dt2015[,c(242,243,37,39,241,35,36)]
+vis_miss(df_physical_factor1, warn_large_data = FALSE)
+
+# 第三组: diabetes and cancer
+df_physical_factor2 <- dt2015[,c(110,111,112,113,114,116,46)]
+vis_miss(df_physical_factor2, warn_large_data = FALSE)
+
+# 第四组：Anxiety, depression, social isolation
+df_mental_factor <- dt2015[,c(221,222,129)]
+vis_miss(df_mental_factor, warn_large_data = FALSE)
