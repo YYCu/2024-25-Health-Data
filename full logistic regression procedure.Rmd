@@ -1,0 +1,1248 @@
+---
+title: 'Logisic regression'
+author: "Qi Lu"
+date: "2025"
+output: html_document
+---
+
+# 1. Download the data and load packages
+```{r}
+
+setwd("C:/Users/LU QI/Desktop")
+
+X2015 <- read.csv("2015.csv", check.names = FALSE)
+
+
+X2015_clean <- X2015
+
+library(glmnet)
+library(caret)
+library(MASS)
+library(rpart)
+library(rpart.plot)
+library(lightgbm)
+library(pROC)
+library(xgboost)
+library(shapviz)
+library(DMwR)
+library(ggplot2)
+library(lattice)
+library(iml)
+library(nestedcv)
+library(vip)
+library(DMwR)
+library(dplyr)
+library(ggplot2)
+library(Metrics)
+#To use SMOTE, we need to download the DMwR package from https://cran.r-project.org/src/contrib/Archive/DMwR/ and manually add it to R, as this package is no longer available in the official R repository. Make sure to use the latest version, 0.4.1.
+
+```
+#This file focus on logistic regression:D
+# 2. Data preprocessing 
+Removing the missing values and renaming the features.
+```{r}
+# Select relevant columns
+clean_dataset <- X2015[, c("SEX", "_AGE80", "WEIGHT2", "HEIGHT3", "_RFSMOK3", "_RFBING5", "INCOME2",
+                           "EXERANY2", "CHCKIDNY", "HAVARTH3", "TOLDHI2", "_RFHYPE5", "CVDSTRK3",
+                           "ASTHMA3", "MENTHLTH", "_RACE", "EDUCA", "FRUIT1", "FVBEANS", "FVGREEN",
+                           "STRENGTH", "_MICHD")]
+
+# Filter rows based on value constraints 
+clean_dataset <- subset(clean_dataset, 
+                        `_MICHD` %in% c("1", "2") &
+                        WEIGHT2 >= 0 & WEIGHT2 <= 999 &
+                        HEIGHT3 >= 200 & HEIGHT3 <= 711 &  # Keep only 200-711 for height
+                        `_RFSMOK3` %in% c("1", "2") &
+                        `_RFBING5` %in% c("1", "2") &
+                        INCOME2 %in% c("1", "2", "3", "4", "5", "6", "7", "8") &
+                        EXERANY2 %in% c("1", "2") &
+                        CHCKIDNY %in% c("1", "2") &
+                        HAVARTH3 %in% c("1", "2") &
+                        TOLDHI2 %in% c("1", "2") &
+                        `_RFHYPE5` %in% c("1", "2") &
+                        CVDSTRK3 %in% c("1", "2") &
+                        ASTHMA3 %in% c("1", "2") &
+                        (`MENTHLTH` >= 1 & `MENTHLTH` <= 30 | `MENTHLTH` == 88) &
+                        `_RACE` %in% c("1", "2", "3", "4", "5", "6", "7", "8") &
+                        EDUCA %in% c("1", "2", "3", "4", "5", "6") &
+                        !(FRUIT1 %in% c(777, 999)) & !is.na(FRUIT1) &
+                        !(FVBEANS %in% c(777, 999)) & !is.na(FVBEANS) &
+                        !(FVGREEN %in% c(777, 999)) & !is.na(FVGREEN) &
+                        !(STRENGTH %in% c(777, 999)) & !is.na(STRENGTH))
+
+# Update column names
+names(clean_dataset) <- c("SEX", "AGE", "WEIGHT", "HEIGHT", "SMOK", "DRINK", "INCOME",
+                          "EXERCISE", "KIDNEY", "ARTHRITIS", "HIGH_CHOLESTEROL", "HIGH_BLOOD_PRESSURE",
+                          "STROKE", "ASTHMA", "MENTAL", "RACE", "EDUCATION", "FRUIT", "BEANS",
+                          "DARK_GREEN_VEG", "MUSCLES_EXERCISE", "y")
+
+# Convert HEIGHT3 from feet/inches to centimeters and round to integer
+convert_height_to_cm <- function(height) {
+  feet <- as.integer(height / 100)  # Extract feet
+  inches <- height %% 100           # Extract inches
+  return(as.integer(round(feet * 30.48 + inches * 2.54)))  # Convert and round to integer
+}
+
+# Apply the conversion function to HEIGHT
+clean_dataset$HEIGHT <- sapply(clean_dataset$HEIGHT, convert_height_to_cm)
+
+# Convert _MICHD to binary factor (1: yes, 0: no)
+clean_dataset$y <- factor(ifelse(clean_dataset$y == 2, 0, 1), labels = c("no", "yes"))
+
+# Convert categorical variables to factors with meaningful labels
+clean_dataset$SEX <- factor(clean_dataset$SEX, levels = c(1, 2), labels = c("MALE", "FEMALE"))
+clean_dataset$SMOK <- factor(clean_dataset$SMOK, levels = c(1, 2), labels = c("_NO", "_YES"))
+clean_dataset$DRINK <- factor(clean_dataset$DRINK, levels = c(1, 2), labels = c("_NO", "_YES"))
+clean_dataset$EXERCISE <- factor(clean_dataset$EXERCISE, levels = c(1, 2), labels = c("_YES", "_NO"))
+clean_dataset$KIDNEY <- factor(clean_dataset$KIDNEY, levels = c(1, 2), labels = c("_YES", "_NO"))
+clean_dataset$ARTHRITIS <- factor(clean_dataset$ARTHRITIS, levels = c(1, 2), labels = c("_YES", "_NO"))
+clean_dataset$HIGH_CHOLESTEROL <- factor(clean_dataset$HIGH_CHOLESTEROL, levels = c(1, 2), labels = c("_YES", "_NO"))
+clean_dataset$HIGH_BLOOD_PRESSURE <- factor(clean_dataset$HIGH_BLOOD_PRESSURE, levels = c(1, 2), labels = c("_NO", "_YES"))
+clean_dataset$STROKE <- factor(clean_dataset$STROKE, levels = c(1, 2), labels = c("_YES", "_NO"))
+clean_dataset$ASTHMA <- factor(clean_dataset$ASTHMA, levels = c(1, 2), labels = c("_YES", "_NO"))
+
+clean_dataset$INCOME <- factor(clean_dataset$INCOME, levels = 1:8,
+                                labels = c("less than $20,000", "less than $20,000", "less than $20,000",
+                                           "$20,000-$35,000", "$20,000-$35,000",
+                                           "$50,000-$75,000", "$50,000-$75,000", "$75,000 or more"))
+clean_dataset$RACE <- factor(clean_dataset$RACE, levels = 1:8, 
+                             labels = c("White", "Black", "Indigenous", "Asian-Pacific", "Asian-Pacific",
+                                        "Other race", "Other race", "Hispanic"))
+clean_dataset$EDUCATION <- factor(clean_dataset$EDUCATION, levels = 1:6,
+                                  labels = c("Never", "Elementary", "High school", "High school",
+                                             "College or technical school", "College or technical school"))
+
+# Clean numerical variables with specific transformations
+clean_dataset$MUSCLES_EXERCISE[clean_dataset$MUSCLES_EXERCISE == 888] <- 0
+clean_dataset$MUSCLES_EXERCISE <- with(clean_dataset, ifelse(MUSCLES_EXERCISE >= 101 & MUSCLES_EXERCISE <= 199,
+                                                             (MUSCLES_EXERCISE - 100) * 4,
+                                                             ifelse(MUSCLES_EXERCISE >= 201 & MUSCLES_EXERCISE <= 299,
+                                                                    MUSCLES_EXERCISE - 200, MUSCLES_EXERCISE)))
+clean_dataset <- subset(clean_dataset, MUSCLES_EXERCISE <= 90)
+
+convert_to_monthly <- function(var) {
+  var[var == 555 | var == 300] <- 0
+  var[var >= 101 & var <= 199] <- (var[var >= 101 & var <= 199] - 100) * 30
+  var[var >= 201 & var <= 299] <- (var[var >= 201 & var <= 299] - 200) * 4.33
+  var[var >= 301 & var <= 399] <- var[var >= 301 & var <= 399] - 300
+  return(as.integer(var))
+}
+
+clean_dataset$FRUIT <- convert_to_monthly(clean_dataset$FRUIT)
+clean_dataset <- subset(clean_dataset, FRUIT <= 200)
+
+clean_dataset$DARK_GREEN_VEG <- convert_to_monthly(clean_dataset$DARK_GREEN_VEG)
+clean_dataset <- subset(clean_dataset, DARK_GREEN_VEG <= 150)
+
+clean_dataset$BEANS <- convert_to_monthly(clean_dataset$BEANS)
+clean_dataset$MENTAL <- ifelse(clean_dataset$MENTAL == 88, 0, clean_dataset$MENTAL)
+
+```
+
+## 2.1 Check the missing value and distribution for height and weight
+```{r}
+colSums(is.na(clean_dataset))
+
+# Plot Height Distribution
+ggplot(clean_dataset, aes(x = HEIGHT)) +
+  geom_histogram(binwidth = 5, fill = "skyblue", color = "black", alpha = 0.7) +
+  geom_density(aes(y = ..count.. * 5), color = "blue", size = 1) +  # Kernel Density
+  labs(title = "Distribution of Height", x = "Height (cm)", y = "Frequency") +
+  theme_minimal()
+
+# Plot Weight Distribution
+ggplot(clean_dataset, aes(x = WEIGHT)) +
+  geom_histogram(binwidth = 5, fill = "orange", color = "black", alpha = 0.7) +
+  geom_density(aes(y = ..count.. * 5), color = "red", size = 1) +  # Kernel Density
+  labs(title = "Distribution of Weight", x = "Weight (pounds)", y = "Frequency") +
+  theme_minimal()
+```
+
+## 2.2 Data set division
+
+```{r}
+set.seed(2025)  # Set random seed
+
+# Total number of rows in the dataset
+n <- nrow(clean_dataset)
+
+# Indices for training set samples
+train_indices <- sample(1:n, size = 0.7 * n)
+
+# Split the dataset
+train_data <- clean_dataset[train_indices, ]  # Training set
+test_data <- clean_dataset[-train_indices, ]  # Test set
+
+#before smote make sure we have heart disease cases remianed in training data
+print(table(train_data$y))
+```
+
+## 2.3 Create SMOTE data(balanced data)
+### 2.3.1 Unbalaced data
+```{r}
+# Count the number of heart disease
+y_counts <- table(clean_dataset$y)
+
+# Calculate the percentage
+percent_labels <- round(y_counts / sum(y_counts) * 100, 2)
+
+# Generate the pie plot
+labels <- paste(names(y_counts), "\n", percent_labels, "%", sep = "")
+pie(y_counts, labels = labels, col = c("lightblue", "lightcoral"),
+    main = "Distribution of y in dataset")
+```
+
+## 2.3.2 Create SMOTE data
+```{r}
+# Test different parameter for SMOTE
+for (over in c(100, 200, 300)) {
+  for (under in c(100, 200, 300)) {
+    set.seed(2025)
+    smote_data <- SMOTE(y ~ ., data = train_data, perc.over = over, perc.under = under)
+    print(table(smote_data$y))
+  }
+}
+
+# Define the SMOTE parameters to test
+perc_over_values <- c(100, 200, 300)
+perc_under_values <- c(100, 200, 300)
+
+# Create a data frame to store results
+results <- data.frame(perc_over = integer(),
+                      perc_under = integer(),
+                      F1_score = numeric(),
+                      AUC = numeric())
+
+# Set up 5-fold cross-validation
+cv_control <- trainControl(method = "cv", number = 5, classProbs = TRUE, summaryFunction = twoClassSummary)
+
+# Loop through different SMOTE parameter combinations
+for (over in perc_over_values) {
+  for (under in perc_under_values) {
+    
+    set.seed(2025)  # Ensure reproducibility
+    
+    # Apply SMOTE
+    smote_data <- SMOTE(y ~ ., data = train_data, perc.over = over, perc.under = under)
+    
+    # Train a Logistic Regression model
+    model <- train(y ~ ., data = smote_data, method = "glm", family = "binomial",
+                   trControl = cv_control, metric = "ROC")
+    
+    # Predict on cross-validation folds
+    predictions <- predict(model, smote_data, type = "prob")
+    
+    # Compute AUC
+    auc_value <- roc(smote_data$y, predictions[, "yes"], levels = rev(levels(smote_data$y)))$auc
+    
+    # Compute F1-score
+    predicted_classes <- predict(model, smote_data)
+    conf_matrix <- confusionMatrix(predicted_classes, smote_data$y, positive = "yes")
+    f1_score <- conf_matrix$byClass["F1"]
+    
+    # Store results
+    results <- rbind(results, data.frame(perc_over = over, perc_under = under, F1_score = f1_score, AUC = auc_value))
+    
+    # Print progress
+    print(paste("Completed SMOTE with perc.over =", over, "perc.under =", under, "F1 =", round(f1_score, 4), "AUC =", round(auc_value, 4)))
+  }
+}
+
+# Print final results
+print(results)
+
+```
+
+```{r}
+# Perform oversampling using SMOTE
+set.seed(2025)
+train_data_smote <- SMOTE(y ~ ., data = train_data, perc.over = 300, perc.under = 100)
+#train_data_smote <- train_data
+
+# Check the class distribution after oversampling
+table(train_data_smote$y)
+```
+
+
+# 3. Logistic model
+
+## 3.1 Baseline model
+```{r}
+# Create the baseline model which contains all 21 features
+features <- c("SEX", "AGE", "WEIGHT", "HEIGHT", "SMOK", "DRINK", "INCOME", "EXERCISE", 
+    "KIDNEY", "ARTHRITIS", "HIGH_CHOLESTEROL", "HIGH_BLOOD_PRESSURE", 
+    "STROKE", "ASTHMA", "MENTAL", "RACE", "FRUIT", "BEANS", "DARK_GREEN_VEG", 
+    "MUSCLES_EXERCISE", "EDUCATION")
+main_formula <- as.formula(paste("y ~", paste(features, collapse = " + ")))
+
+# Use glm to generate the baseline model
+baseline_model <- glm(main_formula, data = train_data, family = binomial)
+```
+
+### 3.1.1 Baseline model on SMOTE dataset
+```{r}
+# Baseline model with SMOTE
+baseline_model_s <- glm(
+  y ~ SEX + AGE + WEIGHT + HEIGHT + RACE + EDUCATION + INCOME +
+       FRUIT + DARK_GREEN_VEG + MUSCLES_EXERCISE + DRINK + SMOK + EXERCISE + BEANS +
+       HIGH_BLOOD_PRESSURE + ASTHMA + STROKE + KIDNEY + HIGH_CHOLESTEROL + MENTAL + ARTHRITIS,
+  family = binomial(link = "logit"),
+  data = train_data_smote
+)
+
+```
+
+### 3.1.2 Apply StepAIC on Baseline model
+```{r}
+# Apply stepwise AIC on baseline model
+optimal_model <- stepAIC(baseline_model, direction = "both")
+
+# Print output
+summary(optimal_model)
+```
+
+### 3.1.3 Apply StepAIC on Baseline model with SMOTE
+```{r}
+# Apply stepwise AIC on baseline model for SMOTE dataset
+optimal_model_s <- stepAIC(baseline_model_s, direction = "both")
+
+# print output
+summary(optimal_model_s)
+```
+
+
+## 3.2 Literature-based interaction model
+```{r}
+# simplied big model with interaction
+big_model_lit <- glm(
+  y ~ SEX + AGE + WEIGHT + HEIGHT + RACE + EDUCATION + INCOME + 
+       FRUIT + DARK_GREEN_VEG + MUSCLES_EXERCISE + DRINK + SMOK + EXERCISE + BEANS +
+       HIGH_BLOOD_PRESSURE + ASTHMA + STROKE + KIDNEY + HIGH_CHOLESTEROL + MENTAL + ARTHRITIS +
+       AGE:WEIGHT + AGE:INCOME + 
+       HIGH_BLOOD_PRESSURE:STROKE + 
+       SEX:SMOK +  WEIGHT:EXERCISE,
+  family = binomial(link = "logit"),
+  data = train_data
+)
+
+summary(big_model_lit)
+```
+
+### 3.2.1 Literature-based interaction model on SMOTE dataset
+```{r}
+# Literature-based model with SMOTE
+big_model_lit_s <- glm(
+  y ~ SEX + AGE + WEIGHT + HEIGHT + RACE + EDUCATION + INCOME + 
+       FRUIT + DARK_GREEN_VEG + MUSCLES_EXERCISE + DRINK + SMOK + EXERCISE + BEANS +
+       HIGH_BLOOD_PRESSURE + ASTHMA + STROKE + KIDNEY + HIGH_CHOLESTEROL + MENTAL + ARTHRITIS +
+       AGE:WEIGHT + AGE:INCOME + 
+       HIGH_BLOOD_PRESSURE:STROKE + 
+       SEX:SMOK +  WEIGHT:EXERCISE,
+  family = binomial(link = "logit"),
+  data = train_data_smote
+)
+```
+
+## 3.2.2 Apply StepAIC on Literature-based interaction model
+```{r}
+# Apply stepwise AIC on Literature-based interaction model
+optimal_model_lit <- stepAIC(big_model_lit, direction = "both")
+
+# print output
+summary(optimal_model_lit)
+```
+
+## 3.2.3 Apply StepAIC on Literature-based interaction model with SMOTE
+```{r}
+# Apply stepwise AIC on Literature-based interaction model
+optimal_model_lit_s <- stepAIC(big_model_lit_s, direction = "both")
+
+# print output
+summary(optimal_model_lit_s)
+```
+
+
+## 3.3 Statistically-based model
+
+### 3.3.1 Extract interaction terms with significant p-values and apply Bonferroni
+```{r}
+# Create a full model contains all interactions
+full_formula <- update(main_formula, . ~ .^2)
+model_full <- glm(full_formula, data = train_data, family = binomial)
+
+# Retrieve all coefficient names
+coef_names <- rownames(summary(model_full)$coefficients)
+
+# Select only interaction terms (names containing ":")
+interaction_coef_names <- coef_names[grep(":", coef_names)]
+
+# Extract p-values of interaction terms
+interaction_p_values <- summary(model_full)$coefficients[interaction_coef_names, 4]
+
+# Select interaction terms with **raw p-values < 0.05**
+significant_interactions_raw <- interaction_coef_names[interaction_p_values < 0.05]
+
+# Perform Bonferroni correction
+bonferroni_p_values <- p.adjust(interaction_p_values, method = "bonferroni")
+
+# Compute Bonferroni adjusted threshold
+alpha_adj <- 0.05 / length(interaction_coef_names)
+
+# Select interaction terms that remain significant after Bonferroni correction
+significant_interactions_bonferroni <- interaction_coef_names[bonferroni_p_values < alpha_adj]
+
+# Print results
+print("interaction terms with raw p-value < 0.05: ")
+print(significant_interactions_raw)
+
+print("interaction terms still significant after Bonferroni correction: ")
+print(significant_interactions_bonferroni)
+
+```
+
+```{r}
+# Recording the interaction terms with significant p-values
+interaction_terms_full <- c("SEX:AGE", "SEX:INCOME", "SEX:EXERCISE","SEX:HIGH_CHOLESTEROL", "SEX:HIGH_BLOOD_PRESSURE",
+                            "SEX:RACE", 
+                            "AGE:WEIGHT", "AGE:SMOK", "AGE:INCOME", "AGE:ARTHRITIS",
+                            "AGE:HIGH_CHOLESTEROL", "AGE:HIGH_BLOOD_PRESSURE", "AGE:STROKE", "AGE:ASTHMA","AGE:RACE",
+                            "HEIGHT:RACE", 
+                            "SMOK:INCOME", "SMOK:HIGH_CHOLESTEROL", "SMOK:HIGH_BLOOD_PRESSURE", "SMOK:STROKE",
+                            "INCOME:KIDNEY", "INCOME:HIGH_CHOLESTEROL", "INCOME:MENTAL",
+                            "EXERCISE:HIGH_BLOOD_PRESSURE", "EXERCISE:MENTAL", 
+                            "KIDNEY:ARTHRITIS", "KIDNEY:RACE", "KIDNEY:DARK_GREEN_VEG",
+                            "ARTHRITIS:RACE", "ARTHRITIS:HIGH_CHOLESTEROL", "ARTHRITIS:BEANS",
+                            "HIGH_CHOLESTEROL:HIGH_BLOOD_PRESSURE", "HIGH_CHOLESTEROL:STROKE",
+                            "HIGH_CHOLESTEROL:ASTHMA", "HIGH_CHOLESTEROL:MENTAL", "HIGH_CHOLESTEROL:RACE",
+                            "HIGH_BLOOD_PRESSURE:STROKE",
+                            "STROKE:RACE",
+                            "ASTHMA:RACE", 
+                            "MENTAL:FRUIT",
+                            "RACE:MUSCLES_EXERCISE",
+                            "FRUIT:EDUCATION"
+                            )
+
+
+# Recording the interaction terms for Bonferroni method
+interaction_terms_reduced <- c("AGE:INCOME", "AGE:HIGH_BLOOD_PRESSURE", "AGE:STROKE", "HIGH_CHOLESTEROL:HIGH_BLOOD_PRESSURE", "HIGH_CHOLESTEROL:STROKE")
+
+```
+
+### 3.3.2 Interaction plot
+```{r}
+# Ensure y is in 0/1 format
+train_data$y_numeric <- ifelse(train_data$y == "yes", 1, 0)
+
+# Set up a 2x3 plotting layout
+par(mfrow = c(2, 3))
+
+# Iterate through all interaction terms and generate interaction plots
+for (term in interaction_terms_full) {
+
+  # Parse interaction variables
+  vars <- unlist(strsplit(term, ":"))  # Split variables
+  var1 <- vars[1]
+  var2 <- vars[2]
+
+  # Ensure the variables exist in the dataset
+  if (!(var1 %in% names(train_data)) || !(var2 %in% names(train_data))) next
+
+  # Generate interaction plot
+  interaction.plot(
+    x.factor = train_data[[var1]],
+    trace.factor = train_data[[var2]],
+    response = train_data$y_numeric,
+    col = rainbow(length(unique(train_data[[var2]]))),  # Different colors for levels
+    lty = 1,  # Line style
+    legend = TRUE,
+    main = paste("Interaction Effect:", term)
+  )
+}
+
+```
+
+
+```{r}
+# Recording the interaction terms that are parallel in the plots
+interaction_plot_parallel <- c("SEX:INCOME", "SEX:EXERCISE", "SEX:HIGH_BLOOD_PRESSURE", "SEX:HIGH_CHOLESTEROL",
+                               "SMOK:INCOME", "SMOK:HIGH_CHOLESTEROL", "SMOK:HIGH_BLOOD_PRESSURE", "SMOK:STROKE", 
+                               "EXERCISE:HIGH_BLOOD_PRESSURE", 
+                               "KIDNEY:ARTHRITIS", 
+                               "ARTHRITIS:HIGH_CHOLESTEROL", 
+                               "HIGH_CHOLESTEROL:STROKE", "HIGH_CHOLESTEROL:ASTHMA",
+                               "HIGH_BLOOD_PRESSURE:STROKE")
+
+
+# Compute the final interaction terms (among significant interactions that also show intersections in the interaction plots)
+interaction_plot_intersect <- setdiff(interaction_terms_full, interaction_plot_parallel)
+interaction_bonf_plot <- union(interaction_terms_reduced, interaction_plot_intersect)
+
+# Output the final interaction terms
+print(interaction_bonf_plot)
+ 
+```
+
+### 3.3.3 Likelihood ratio test(LRT)
+```{r}
+# Ensure main_formula is converted to a string
+main_formula_str <- as.character(main_formula)[3]
+
+# Ensure interaction_bonf_plot is not empty
+final_formula_str <- paste("y ~", main_formula_str, "+", paste(interaction_bonf_plot, collapse = " + "))
+
+# Convert to formula
+final_formula <- as.formula(final_formula_str)
+
+# Run glm logistic regression
+final_model <- glm(final_formula, data = train_data, family = binomial)
+
+# Starting LRT
+current_model <- final_model
+
+# Recording the interaction_bonf_plot as interaction_terms
+interaction_terms <- c("AGE:INCOME", "AGE:HIGH_BLOOD_PRESSURE", "AGE:STROKE", 
+                       "HIGH_CHOLESTEROL:HIGH_BLOOD_PRESSURE", "HIGH_CHOLESTEROL:STROKE", 
+                       "SEX:AGE", "SEX:RACE", 
+                       "AGE:WEIGHT", "AGE:SMOK", "AGE:ARTHRITIS", "AGE:HIGH_CHOLESTEROL", "AGE:ASTHMA", "AGE:RACE", 
+                       "HEIGHT:RACE", 
+                       "INCOME:KIDNEY", "INCOME:HIGH_CHOLESTEROL", "INCOME:MENTAL", 
+                       "EXERCISE:MENTAL", 
+                       "KIDNEY:RACE", "KIDNEY:DARK_GREEN_VEG",
+                       "ARTHRITIS:RACE", "ARTHRITIS:BEANS", 
+                       "HIGH_CHOLESTEROL:MENTAL", "HIGH_CHOLESTEROL:RACE", 
+                       "STROKE:RACE",
+                       "ASTHMA:RACE", 
+                       "MENTAL:FRUIT",
+                       "RACE:MUSCLES_EXERCISE", 
+                       "FRUIT:EDUCATION")
+
+
+# Store interactions that need to be retained
+kept_interactions <- c()
+
+# Iterate through each interaction, remove it, and perform LRT
+for (interaction in interaction_terms) {
+
+  # Create a model excluding the interaction term
+  reduced_formula <- as.formula(
+    paste(". ~ . -", interaction)
+  )
+  reduced_model <- update(current_model, reduced_formula)
+  
+  # Use LRT to compare two models
+  lrt_result <- anova(reduced_model, current_model, test = "Chisq")
+  p_value <- lrt_result$`Pr(>Chi)`[2]  # extract p-value
+  
+  # If p < 0.05，keep the interaction term
+  if (p_value < 0.05) {
+    kept_interactions <- c(kept_interactions, interaction)
+  } else {
+    # else, remove the interaction term
+    current_model <- reduced_model
+  }
+}
+# Print the kept interaction
+print(kept_interactions)
+
+# Print the model
+final_model_lrt <- current_model
+```
+
+### 3.3.4 StepAIC
+```{r}
+final_model_aic <- stepAIC(final_model_lrt, direction = "both")
+summary(final_model_aic)
+```
+
+### 3.3.5 Statistically-based interaction model with SMOTE
+```{r}
+# interaction model with smote
+big_model_stat <- final_model_aic
+final_terms_aic <- union(features, kept_interactions)
+formula_aic <- as.formula(paste("y ~", paste(final_terms_aic, collapse = " + ")))
+big_model_stat_s <- glm(formula_aic, family = binomial, data = train_data_smote)
+```
+
+
+# 4. Logitic Model Evaluation
+
+## 4.1 Baseline model
+
+### 4.1.1 Baseline model(Only change Threshold)
+```{r}
+# (Baseline, Youden:x/v smote:x)
+# Compute Youden's index
+logit_pred_prob <- predict(baseline_model, newdata = test_data, type = "response")
+logit_pred_prob <- as.numeric(logit_pred_prob)
+roc_obj <- roc(as.numeric(test_data$y) - 1, logit_pred_prob)
+auc_value <- roc_obj$auc
+best_coords <- coords(roc_obj, "best", ret = c("threshold", "specificity", "sensitivity"), best.method = "youden")
+print(best_coords)
+best_threshold <- as.numeric(best_coords["threshold"])
+
+# Classify predictions using BOTH 0.5 threshold and best_threshold
+logit_pred_class_0.5 <- factor(ifelse(logit_pred_prob > 0.5, "yes", "no"), levels = c("no", "yes"))
+logit_pred_class_best <- factor(ifelse(logit_pred_prob > best_threshold, "yes", "no"), levels = c("no", "yes"))
+
+# Compute confusion matrices for BOTH thresholds
+cm_0.5 <- confusionMatrix(logit_pred_class_0.5, test_data$y, positive = "yes")
+cm_best <- confusionMatrix(logit_pred_class_best, test_data$y, positive = "yes")
+
+
+# Extract evaluation metrics for both thresholds
+extract_metrics <- function(cm) {
+  accuracy <- cm$overall["Accuracy"]
+  precision <- cm$byClass["Precision"]
+  recall <- cm$byClass["Recall"]
+  f1_score <- 2 * (precision * recall) / (precision + recall)
+  npv <- cm$byClass["Neg Pred Value"]
+  ppv <- precision  # PPV is the same as Precision
+  
+  return(list(
+    Accuracy = as.numeric(accuracy),
+    Precision = as.numeric(precision),
+    Recall = as.numeric(recall),
+    F1_Score = as.numeric(f1_score),
+    AUC = as.numeric(auc_value),
+    PPV = as.numeric(ppv),
+    NPV = as.numeric(npv)
+  ))
+}
+
+# Compute MSE, MAE, RMSE
+mse <- mean((as.numeric(test_data$y) - 1 - logit_pred_prob)^2)
+mae <- mean(abs(as.numeric(test_data$y) - 1 - logit_pred_prob))
+rmse <- sqrt(mse)
+
+# Store metrics for both thresholds
+metrics_0.5 <- extract_metrics(cm_0.5)
+metrics_best <- extract_metrics(cm_best)
+
+# Print results
+cat("\nMetrics for threshold = 0.5\n")
+print(metrics_0.5)
+print(cm_0.5)
+
+cat("\nMetrics for threshold = Best (Youden’s Index)\n")
+print(metrics_best)
+print(cm_best)
+
+
+# Explicitly print MSE, MAE, RMSE separately
+cat("\nMean Squared Error (MSE):", mse, "\n")
+cat("Mean Absolute Error (MAE):", mae, "\n")
+cat("Root Mean Squared Error (RMSE):", rmse, "\n")
+
+```
+
+### 4.1.2 Baseline model(Change both Threshold and SMOTE)
+```{r}
+# (Baseline, Youden:x/v smote:v)
+# Compute Youden's index
+logit_pred_prob <- predict(baseline_model_s, newdata = test_data, type = "response")
+logit_pred_prob <- as.numeric(logit_pred_prob)
+roc_obj <- roc(as.numeric(test_data$y) - 1, logit_pred_prob)
+auc_value <- roc_obj$auc
+best_coords <- coords(roc_obj, "best", ret = c("threshold", "specificity", "sensitivity"), best.method = "youden")
+print(best_coords)
+best_threshold <- as.numeric(best_coords["threshold"])
+
+# Classify predictions using BOTH 0.5 threshold and best_threshold
+logit_pred_class_0.5 <- factor(ifelse(logit_pred_prob > 0.5, "yes", "no"), levels = c("no", "yes"))
+logit_pred_class_best <- factor(ifelse(logit_pred_prob > best_threshold, "yes", "no"), levels = c("no", "yes"))
+
+# Compute confusion matrices for BOTH thresholds
+cm_0.5 <- confusionMatrix(logit_pred_class_0.5, test_data$y, positive = "yes")
+cm_best <- confusionMatrix(logit_pred_class_best, test_data$y, positive = "yes")
+
+
+# Extract evaluation metrics for both thresholds
+extract_metrics <- function(cm) {
+  accuracy <- cm$overall["Accuracy"]
+  precision <- cm$byClass["Precision"]
+  recall <- cm$byClass["Recall"]
+  f1_score <- 2 * (precision * recall) / (precision + recall)
+  npv <- cm$byClass["Neg Pred Value"]
+  ppv <- precision  # PPV is the same as Precision
+  
+  return(list(
+    Accuracy = as.numeric(accuracy),
+    Precision = as.numeric(precision),
+    Recall = as.numeric(recall),
+    F1_Score = as.numeric(f1_score),
+    AUC = as.numeric(auc_value),
+    PPV = as.numeric(ppv),
+    NPV = as.numeric(npv)
+  ))
+}
+
+# Compute MSE, MAE, RMSE
+mse <- mean((as.numeric(test_data$y) - 1 - logit_pred_prob)^2)
+mae <- mean(abs(as.numeric(test_data$y) - 1 - logit_pred_prob))
+rmse <- sqrt(mse)
+
+# Store metrics for both thresholds
+metrics_0.5 <- extract_metrics(cm_0.5)
+metrics_best <- extract_metrics(cm_best)
+
+# Print results
+cat("\nMetrics for threshold = 0.5\n")
+print(metrics_0.5)
+print(cm_0.5)
+
+cat("\nMetrics for threshold = Best (Youden’s Index)\n")
+print(metrics_best)
+print(cm_best)
+
+
+# Explicitly print MSE, MAE, RMSE separately
+cat("\nMean Squared Error (MSE):", mse, "\n")
+cat("Mean Absolute Error (MAE):", mae, "\n")
+cat("Root Mean Squared Error (RMSE):", rmse, "\n")
+```
+
+### 4.1.3 Baseline model + StepAIC (Only change Thershold)
+```{r}
+# (Baseline + AIC, Youden:x/v smote:x)
+# Compute Youden's index
+logit_pred_prob <- predict(optimal_model, newdata = test_data, type = "response")
+logit_pred_prob <- as.numeric(logit_pred_prob)
+roc_obj <- roc(as.numeric(test_data$y) - 1, logit_pred_prob)
+auc_value <- roc_obj$auc
+best_coords <- coords(roc_obj, "best", ret = c("threshold", "specificity", "sensitivity"), best.method = "youden")
+print(best_coords)
+best_threshold <- as.numeric(best_coords["threshold"])
+
+# Classify predictions using BOTH 0.5 threshold and best_threshold
+logit_pred_class_0.5 <- factor(ifelse(logit_pred_prob > 0.5, "yes", "no"), levels = c("no", "yes"))
+logit_pred_class_best <- factor(ifelse(logit_pred_prob > best_threshold, "yes", "no"), levels = c("no", "yes"))
+
+# Compute confusion matrices for BOTH thresholds
+cm_0.5 <- confusionMatrix(logit_pred_class_0.5, test_data$y, positive = "yes")
+cm_best <- confusionMatrix(logit_pred_class_best, test_data$y, positive = "yes")
+
+
+# Extract evaluation metrics for both thresholds
+extract_metrics <- function(cm) {
+  accuracy <- cm$overall["Accuracy"]
+  precision <- cm$byClass["Precision"]
+  recall <- cm$byClass["Recall"]
+  f1_score <- 2 * (precision * recall) / (precision + recall)
+  npv <- cm$byClass["Neg Pred Value"]
+  ppv <- precision  # PPV is the same as Precision
+  
+  return(list(
+    Accuracy = as.numeric(accuracy),
+    Precision = as.numeric(precision),
+    Recall = as.numeric(recall),
+    F1_Score = as.numeric(f1_score),
+    AUC = as.numeric(auc_value),
+    PPV = as.numeric(ppv),
+    NPV = as.numeric(npv)
+  ))
+}
+
+# Compute MSE, MAE, RMSE
+mse <- mean((as.numeric(test_data$y) - 1 - logit_pred_prob)^2)
+mae <- mean(abs(as.numeric(test_data$y) - 1 - logit_pred_prob))
+rmse <- sqrt(mse)
+
+# Store metrics for both thresholds
+metrics_0.5 <- extract_metrics(cm_0.5)
+metrics_best <- extract_metrics(cm_best)
+
+# Print results
+cat("\nMetrics for threshold = 0.5\n")
+print(metrics_0.5)
+print(cm_0.5)
+
+cat("\nMetrics for threshold = Best (Youden’s Index)\n")
+print(metrics_best)
+print(cm_best)
+
+
+# Explicitly print MSE, MAE, RMSE separately
+cat("\nMean Squared Error (MSE):", mse, "\n")
+cat("Mean Absolute Error (MAE):", mae, "\n")
+cat("Root Mean Squared Error (RMSE):", rmse, "\n")
+
+
+```
+
+### 4.1.4 Baseline model + StepAIC(Change both Threshold and SMOTE)
+```{r}
+# (Baseline + AIC, Youden:x/v smote:v)
+# Compute Youden's index
+logit_pred_prob <- predict(optimal_model_s, newdata = test_data, type = "response")
+logit_pred_prob <- as.numeric(logit_pred_prob)
+roc_obj <- roc(as.numeric(test_data$y) - 1, logit_pred_prob)
+auc_value <- roc_obj$auc
+best_coords <- coords(roc_obj, "best", ret = c("threshold", "specificity", "sensitivity"), best.method = "youden")
+print(best_coords)
+best_threshold <- as.numeric(best_coords["threshold"])
+
+# Classify predictions using BOTH 0.5 threshold and best_threshold
+logit_pred_class_0.5 <- factor(ifelse(logit_pred_prob > 0.5, "yes", "no"), levels = c("no", "yes"))
+logit_pred_class_best <- factor(ifelse(logit_pred_prob > best_threshold, "yes", "no"), levels = c("no", "yes"))
+
+# Compute confusion matrices for BOTH thresholds
+cm_0.5 <- confusionMatrix(logit_pred_class_0.5, test_data$y, positive = "yes")
+cm_best <- confusionMatrix(logit_pred_class_best, test_data$y, positive = "yes")
+
+
+# Extract evaluation metrics for both thresholds
+extract_metrics <- function(cm) {
+  accuracy <- cm$overall["Accuracy"]
+  precision <- cm$byClass["Precision"]
+  recall <- cm$byClass["Recall"]
+  f1_score <- 2 * (precision * recall) / (precision + recall)
+  npv <- cm$byClass["Neg Pred Value"]
+  ppv <- precision  # PPV is the same as Precision
+  
+  return(list(
+    Accuracy = as.numeric(accuracy),
+    Precision = as.numeric(precision),
+    Recall = as.numeric(recall),
+    F1_Score = as.numeric(f1_score),
+    AUC = as.numeric(auc_value),
+    PPV = as.numeric(ppv),
+    NPV = as.numeric(npv)
+  ))
+}
+
+# Compute MSE, MAE, RMSE
+mse <- mean((as.numeric(test_data$y) - 1 - logit_pred_prob)^2)
+mae <- mean(abs(as.numeric(test_data$y) - 1 - logit_pred_prob))
+rmse <- sqrt(mse)
+
+# Store metrics for both thresholds
+metrics_0.5 <- extract_metrics(cm_0.5)
+metrics_best <- extract_metrics(cm_best)
+
+# Print results
+cat("\nMetrics for threshold = 0.5\n")
+print(metrics_0.5)
+print(cm_0.5)
+
+cat("\nMetrics for threshold = Best (Youden’s Index)\n")
+print(metrics_best)
+print(cm_best)
+
+
+# Explicitly print MSE, MAE, RMSE separately
+cat("\nMean Squared Error (MSE):", mse, "\n")
+cat("Mean Absolute Error (MAE):", mae, "\n")
+cat("Root Mean Squared Error (RMSE):", rmse, "\n")
+
+```
+
+## 4.2 Literature-based interaction model
+
+### 4.2.1 Literature-based interaction model(Only change Threshold)
+```{r}
+# (Lit-interaction, Youden:x/v smote:x)
+# Compute Youden's index
+logit_pred_prob <- predict(big_model_lit, newdata = test_data, type = "response")
+logit_pred_prob <- as.numeric(logit_pred_prob)
+roc_obj <- roc(as.numeric(test_data$y) - 1, logit_pred_prob)
+auc_value <- roc_obj$auc
+best_coords <- coords(roc_obj, "best", ret = c("threshold", "specificity", "sensitivity"), best.method = "youden")
+print(best_coords)
+best_threshold <- as.numeric(best_coords["threshold"])
+
+# Classify predictions using BOTH 0.5 threshold and best_threshold
+logit_pred_class_0.5 <- factor(ifelse(logit_pred_prob > 0.5, "yes", "no"), levels = c("no", "yes"))
+logit_pred_class_best <- factor(ifelse(logit_pred_prob > best_threshold, "yes", "no"), levels = c("no", "yes"))
+
+# Compute confusion matrices for BOTH thresholds
+cm_0.5 <- confusionMatrix(logit_pred_class_0.5, test_data$y, positive = "yes")
+cm_best <- confusionMatrix(logit_pred_class_best, test_data$y, positive = "yes")
+
+
+# Extract evaluation metrics for both thresholds
+extract_metrics <- function(cm) {
+  accuracy <- cm$overall["Accuracy"]
+  precision <- cm$byClass["Precision"]
+  recall <- cm$byClass["Recall"]
+  f1_score <- 2 * (precision * recall) / (precision + recall)
+  npv <- cm$byClass["Neg Pred Value"]
+  ppv <- precision  # PPV is the same as Precision
+  
+  return(list(
+    Accuracy = as.numeric(accuracy),
+    Precision = as.numeric(precision),
+    Recall = as.numeric(recall),
+    F1_Score = as.numeric(f1_score),
+    AUC = as.numeric(auc_value),
+    PPV = as.numeric(ppv),
+    NPV = as.numeric(npv)
+  ))
+}
+
+# Compute MSE, MAE, RMSE
+mse <- mean((as.numeric(test_data$y) - 1 - logit_pred_prob)^2)
+mae <- mean(abs(as.numeric(test_data$y) - 1 - logit_pred_prob))
+rmse <- sqrt(mse)
+
+# Store metrics for both thresholds
+metrics_0.5 <- extract_metrics(cm_0.5)
+metrics_best <- extract_metrics(cm_best)
+
+# Print results
+cat("\nMetrics for threshold = 0.5\n")
+print(metrics_0.5)
+print(cm_0.5)
+
+cat("\nMetrics for threshold = Best (Youden’s Index)\n")
+print(metrics_best)
+print(cm_best)
+
+
+# Explicitly print MSE, MAE, RMSE separately
+cat("\nMean Squared Error (MSE):", mse, "\n")
+cat("Mean Absolute Error (MAE):", mae, "\n")
+cat("Root Mean Squared Error (RMSE):", rmse, "\n")
+```
+
+
+### 4.2.2 Literature-based interaction model(Change both Threshold and SMOTE)
+```{r}
+# (Lit-interaction, Youden:x/v smote:v)
+# Compute Youden's index
+logit_pred_prob <- predict(big_model_lit_s, newdata = test_data, type = "response")
+logit_pred_prob <- as.numeric(logit_pred_prob)
+roc_obj <- roc(as.numeric(test_data$y) - 1, logit_pred_prob)
+auc_value <- roc_obj$auc
+best_coords <- coords(roc_obj, "best", ret = c("threshold", "specificity", "sensitivity"), best.method = "youden")
+print(best_coords)
+best_threshold <- as.numeric(best_coords["threshold"])
+
+# Classify predictions using BOTH 0.5 threshold and best_threshold
+logit_pred_class_0.5 <- factor(ifelse(logit_pred_prob > 0.5, "yes", "no"), levels = c("no", "yes"))
+logit_pred_class_best <- factor(ifelse(logit_pred_prob > best_threshold, "yes", "no"), levels = c("no", "yes"))
+
+# Compute confusion matrices for BOTH thresholds
+cm_0.5 <- confusionMatrix(logit_pred_class_0.5, test_data$y, positive = "yes")
+cm_best <- confusionMatrix(logit_pred_class_best, test_data$y, positive = "yes")
+
+
+# Extract evaluation metrics for both thresholds
+extract_metrics <- function(cm) {
+  accuracy <- cm$overall["Accuracy"]
+  precision <- cm$byClass["Precision"]
+  recall <- cm$byClass["Recall"]
+  f1_score <- 2 * (precision * recall) / (precision + recall)
+  npv <- cm$byClass["Neg Pred Value"]
+  ppv <- precision  # PPV is the same as Precision
+  
+  return(list(
+    Accuracy = as.numeric(accuracy),
+    Precision = as.numeric(precision),
+    Recall = as.numeric(recall),
+    F1_Score = as.numeric(f1_score),
+    AUC = as.numeric(auc_value),
+    PPV = as.numeric(ppv),
+    NPV = as.numeric(npv)
+  ))
+}
+
+# Compute MSE, MAE, RMSE
+mse <- mean((as.numeric(test_data$y) - 1 - logit_pred_prob)^2)
+mae <- mean(abs(as.numeric(test_data$y) - 1 - logit_pred_prob))
+rmse <- sqrt(mse)
+
+# Store metrics for both thresholds
+metrics_0.5 <- extract_metrics(cm_0.5)
+metrics_best <- extract_metrics(cm_best)
+
+# Print results
+cat("\nMetrics for threshold = 0.5\n")
+print(metrics_0.5)
+print(cm_0.5)
+
+cat("\nMetrics for threshold = Best (Youden’s Index)\n")
+print(metrics_best)
+print(cm_best)
+
+
+# Explicitly print MSE, MAE, RMSE separately
+cat("\nMean Squared Error (MSE):", mse, "\n")
+cat("Mean Absolute Error (MAE):", mae, "\n")
+cat("Root Mean Squared Error (RMSE):", rmse, "\n")
+
+
+```
+
+
+### 4.2.3 Literature-based interaction model + StepAIC(Only change Threshold)
+```{r}
+# (Lit-interaction + AIC, Youden:x/v smote:x)
+# Compute Youden's index
+logit_pred_prob <- predict(optimal_model_lit, newdata = test_data, type = "response")
+logit_pred_prob <- as.numeric(logit_pred_prob)
+roc_obj <- roc(as.numeric(test_data$y) - 1, logit_pred_prob)
+auc_value <- roc_obj$auc
+best_coords <- coords(roc_obj, "best", ret = c("threshold", "specificity", "sensitivity"), best.method = "youden")
+print(best_coords)
+best_threshold <- as.numeric(best_coords["threshold"])
+
+# Classify predictions using BOTH 0.5 threshold and best_threshold
+logit_pred_class_0.5 <- factor(ifelse(logit_pred_prob > 0.5, "yes", "no"), levels = c("no", "yes"))
+logit_pred_class_best <- factor(ifelse(logit_pred_prob > best_threshold, "yes", "no"), levels = c("no", "yes"))
+
+# Compute confusion matrices for BOTH thresholds
+cm_0.5 <- confusionMatrix(logit_pred_class_0.5, test_data$y, positive = "yes")
+cm_best <- confusionMatrix(logit_pred_class_best, test_data$y, positive = "yes")
+
+
+# Extract evaluation metrics for both thresholds
+extract_metrics <- function(cm) {
+  accuracy <- cm$overall["Accuracy"]
+  precision <- cm$byClass["Precision"]
+  recall <- cm$byClass["Recall"]
+  f1_score <- 2 * (precision * recall) / (precision + recall)
+  npv <- cm$byClass["Neg Pred Value"]
+  ppv <- precision  # PPV is the same as Precision
+  
+  return(list(
+    Accuracy = as.numeric(accuracy),
+    Precision = as.numeric(precision),
+    Recall = as.numeric(recall),
+    F1_Score = as.numeric(f1_score),
+    AUC = as.numeric(auc_value),
+    PPV = as.numeric(ppv),
+    NPV = as.numeric(npv)
+  ))
+}
+
+# Compute MSE, MAE, RMSE
+mse <- mean((as.numeric(test_data$y) - 1 - logit_pred_prob)^2)
+mae <- mean(abs(as.numeric(test_data$y) - 1 - logit_pred_prob))
+rmse <- sqrt(mse)
+
+# Store metrics for both thresholds
+metrics_0.5 <- extract_metrics(cm_0.5)
+metrics_best <- extract_metrics(cm_best)
+
+# Print results
+cat("\nMetrics for threshold = 0.5\n")
+print(metrics_0.5)
+print(cm_0.5)
+
+cat("\nMetrics for threshold = Best (Youden’s Index)\n")
+print(metrics_best)
+print(cm_best)
+
+
+# Explicitly print MSE, MAE, RMSE separately
+cat("\nMean Squared Error (MSE):", mse, "\n")
+cat("Mean Absolute Error (MAE):", mae, "\n")
+cat("Root Mean Squared Error (RMSE):", rmse, "\n")
+
+```
+
+### 4.2.4 Literature-based interaction model + StepAIC(Change both Threshold and SMOTE)
+```{r}
+# (Lit-interaction + AIC, Youden:x/v smote:v)
+# Compute Youden's index
+logit_pred_prob <- predict(optimal_model_lit_s, newdata = test_data, type = "response")
+logit_pred_prob <- as.numeric(logit_pred_prob)
+roc_obj <- roc(as.numeric(test_data$y) - 1, logit_pred_prob)
+auc_value <- roc_obj$auc
+best_coords <- coords(roc_obj, "best", ret = c("threshold", "specificity", "sensitivity"), best.method = "youden")
+print(best_coords)
+best_threshold <- as.numeric(best_coords["threshold"])
+
+# Classify predictions using BOTH 0.5 threshold and best_threshold
+logit_pred_class_0.5 <- factor(ifelse(logit_pred_prob > 0.5, "yes", "no"), levels = c("no", "yes"))
+logit_pred_class_best <- factor(ifelse(logit_pred_prob > best_threshold, "yes", "no"), levels = c("no", "yes"))
+
+# Compute confusion matrices for BOTH thresholds
+cm_0.5 <- confusionMatrix(logit_pred_class_0.5, test_data$y, positive = "yes")
+cm_best <- confusionMatrix(logit_pred_class_best, test_data$y, positive = "yes")
+
+
+# Extract evaluation metrics for both thresholds
+extract_metrics <- function(cm) {
+  accuracy <- cm$overall["Accuracy"]
+  precision <- cm$byClass["Precision"]
+  recall <- cm$byClass["Recall"]
+  f1_score <- 2 * (precision * recall) / (precision + recall)
+  npv <- cm$byClass["Neg Pred Value"]
+  ppv <- precision  # PPV is the same as Precision
+  
+  return(list(
+    Accuracy = as.numeric(accuracy),
+    Precision = as.numeric(precision),
+    Recall = as.numeric(recall),
+    F1_Score = as.numeric(f1_score),
+    AUC = as.numeric(auc_value),
+    PPV = as.numeric(ppv),
+    NPV = as.numeric(npv)
+  ))
+}
+
+# Compute MSE, MAE, RMSE
+mse <- mean((as.numeric(test_data$y) - 1 - logit_pred_prob)^2)
+mae <- mean(abs(as.numeric(test_data$y) - 1 - logit_pred_prob))
+rmse <- sqrt(mse)
+
+# Store metrics for both thresholds
+metrics_0.5 <- extract_metrics(cm_0.5)
+metrics_best <- extract_metrics(cm_best)
+
+# Print results
+cat("\nMetrics for threshold = 0.5\n")
+print(metrics_0.5)
+print(cm_0.5)
+
+cat("\nMetrics for threshold = Best (Youden’s Index)\n")
+print(metrics_best)
+print(cm_best)
+
+
+# Explicitly print MSE, MAE, RMSE separately
+cat("\nMean Squared Error (MSE):", mse, "\n")
+cat("Mean Absolute Error (MAE):", mae, "\n")
+cat("Root Mean Squared Error (RMSE):", rmse, "\n")
+
+```
+
+## 4.3 Statistically-based interaction model
+
+### 4.3.1 Statistically-based interaction model(Only Change the Threshold)
+```{r}
+# (Stat-interaction, Youden:x/v smote:x)
+# Compute Youden's index for logistic model without interaction
+logit_pred_prob_c <- predict(big_model_stat, newdata = test_data, type = "response")
+logit_pred_prob_c <- as.numeric(logit_pred_prob_c)
+roc_obj_c <- roc(as.numeric(test_data$y) - 1, logit_pred_prob_c)
+auc_value_c <- roc_obj_c$auc
+best_coords_c <- coords(roc_obj_c, "best", ret = c("threshold", "specificity", "sensitivity"), best.method = "youden")
+print(best_coords_c)
+best_threshold_c <- as.numeric(best_coords_c["threshold"])
+
+# Classify predictions using BOTH 0.5 threshold and best_threshold
+logit_pred_class_0.5_c <- factor(ifelse(logit_pred_prob_c > 0.5, "yes", "no"), levels = c("no", "yes"))
+logit_pred_class_best_c <- factor(ifelse(logit_pred_prob_c > best_threshold_c, "yes", "no"), levels = c("no", "yes"))
+
+# Compute confusion matrices for BOTH thresholds
+cm_0.5_c <- confusionMatrix(logit_pred_class_0.5_c, test_data$y, positive = "yes")
+cm_best_c <- confusionMatrix(logit_pred_class_best_c, test_data$y, positive = "yes")
+
+# Extract evaluation metrics for both thresholds
+extract_metrics_c <- function(cm) {
+  accuracy_c <- cm$overall["Accuracy"]
+  precision_c <- cm$byClass["Precision"]
+  recall_c <- cm$byClass["Recall"]
+  f1_score_c <- 2 * (precision_c * recall_c) / (precision_c + recall_c)
+  npv_c <- cm$byClass_c["Neg Pred Value"]
+  ppv_c <- precision_c  # PPV is the same as Precision
+  
+  return(list(
+    Accuracy = as.numeric(accuracy_c),
+    Precision = as.numeric(precision_c),
+    Recall = as.numeric(recall_c),
+    F1_Score = as.numeric(f1_score_c),
+    AUC = as.numeric(auc_value_c),
+    PPV = as.numeric(ppv_c),
+    NPV = as.numeric(npv_c)
+  ))
+}
+
+# Store metrics for both thresholds
+metrics_0.5_c <- extract_metrics_c(cm_0.5_c)
+metrics_best_c <- extract_metrics_c(cm_best_c)
+
+# Print results
+cat("\nMetrics for threshold = 0.5\n")
+print(metrics_0.5_c)
+print(cm_0.5_c)
+
+cat("\nMetrics for threshold = Best (Youden’s Index)\n")
+print(metrics_best_c)
+print(cm_best_c)
+
+# Compute RMSE for both thresholds
+rmse <- function(y_true, y_pred) {
+  sqrt(mean((y_true - y_pred)^2))
+}
+
+# RMSE for 0.5 threshold
+rmse_0_5_c <- rmse(as.numeric(test_data$y) - 1, logit_pred_prob_c) 
+
+# RMSE for best threshold
+rmse_best_c <- rmse(as.numeric(test_data$y) - 1, logit_pred_prob_c)
+
+# Print RMSE values
+print(paste("RMSE (0.5 threshold):", rmse_0_5_c))
+print(paste("RMSE (Best threshold):", rmse_best_c))
+
+```
+
+### 4.3.2 Statistically-based interaction model(Change both Threshold and SMOTE)
+```{r}
+# (Stat-interaction, Youden:x/v smote:v)
+# Compute Youden's index for logistic model with interaction
+logit_pred_prob_c_s <- predict(big_model_stat_s, newdata = test_data, type = "response")
+logit_pred_prob_c_s <- as.numeric(logit_pred_prob_c_s)
+roc_obj_c_s <- roc(as.numeric(test_data$y) - 1, logit_pred_prob_c_s)
+auc_value_c_s <- roc_obj_c_s$auc
+best_coords_c_s <- coords(roc_obj_c_s, "best", ret = c("threshold", "specificity", "sensitivity"), best.method = "youden")
+print(best_coords_c_s)
+best_threshold_c_s <- as.numeric(best_coords_c_s["threshold"])
+
+# Classify predictions using BOTH 0.5 threshold and best_threshold
+logit_pred_class_0.5_c_s <- factor(ifelse(logit_pred_prob_c_s > 0.5, "yes", "no"), levels = c("no", "yes"))
+logit_pred_class_best_c_s <- factor(ifelse(logit_pred_prob_c_s > best_threshold_c_s, "yes", "no"), levels = c("no", "yes"))
+
+# Compute confusion matrices for BOTH thresholds
+cm_0.5_c_s <- confusionMatrix(logit_pred_class_0.5_c_s, test_data$y, positive = "yes")
+cm_best_c_s <- confusionMatrix(logit_pred_class_best_c_s, test_data$y, positive = "yes")
+
+# Extract evaluation metrics for both thresholds
+extract_metrics_c_s <- function(cm) {
+  accuracy <- cm$overall["Accuracy"]
+  precision <- cm$byClass["Precision"]
+  recall <- cm$byClass["Recall"]
+  f1_score <- 2 * (precision * recall) / (precision + recall)
+  npv <- cm$byClass["Neg Pred Value"]
+  ppv <- precision  # PPV is the same as Precision
+  
+  return(list(
+    Accuracy = as.numeric(accuracy),
+    Precision = as.numeric(precision),
+    Recall = as.numeric(recall),
+    F1_Score = as.numeric(f1_score),
+    AUC = as.numeric(auc_value_c_s),
+    PPV = as.numeric(ppv),
+    NPV = as.numeric(npv)
+  ))
+}
+
+# Store metrics for both thresholds
+metrics_0.5_c_s <- extract_metrics_c_s(cm_0.5_c_s)
+metrics_best_c_s <- extract_metrics_c_s(cm_best_c_s)
+
+# Print results
+cat("\nMetrics for threshold = 0.5\n")
+print(metrics_0.5_c_s)
+print(cm_0.5_c_s)
+
+cat("\nMetrics for threshold = Best (Youden’s Index)\n")
+print(metrics_best_c_s)
+print(cm_best_c_s)
+
+# RMSE for 0.5 threshold
+rmse_0_5_c_s <- rmse(as.numeric(test_data$y) - 1, logit_pred_prob_c_s) 
+
+# RMSE for best threshold
+rmse_best_c_s <- rmse(as.numeric(test_data$y) - 1, logit_pred_prob_c_s)
+
+# Print RMSE values
+print(paste("RMSE (0.5 threshold):", rmse_0_5_c_s))
+print(paste("RMSE (Best threshold):", rmse_best_c_s))
+```
+
+
+

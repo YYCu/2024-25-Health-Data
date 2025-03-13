@@ -1,0 +1,272 @@
+---
+title: '2021shap'
+author: "Qi Lu"
+date: "2025"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Load the package
+
+```{r}
+
+library(glmnet)
+library(caret)
+library(MASS)
+library(rpart)
+library(rpart.plot)
+library(lightgbm)
+library(pROC)
+library(xgboost)
+library(shapviz)
+library(DMwR)
+library(ggplot2)
+library(lattice)
+
+
+```
+
+Read data
+
+```{r}
+
+setwd("C:/Users/LU QI/Desktop")
+
+X2021 <- read.csv("2021.csv", check.names = FALSE)
+```
+
+Data preprocessing
+```{r}
+# Select relevant columns
+clean_dataset <- X2021[, c("_SEX", "_AGE80", "WEIGHT2", "HEIGHT3", "_RFSMOK3", "_RFBING5", "INCOME3",
+                           "EXERANY2", "CHCKDNY2", "HAVARTH5", "TOLDHI3", "_RFHYPE6", "CVDSTRK3",
+                           "ASTHMA3", "MENTHLTH", "_RACE", "EDUCA", "FRUIT2",  "FVGREEN1",
+                            "_MICHD")]
+
+# Filter rows based on value constraints 
+clean_dataset <- subset(clean_dataset, 
+                        `_MICHD` %in% c("1", "2") &
+                        WEIGHT2 >= 0 & WEIGHT2 <= 999 &
+                        HEIGHT3 >= 200 & HEIGHT3 <= 711 &  # Keep only 200-711 for height
+                        `_RFSMOK3` %in% c("1", "2") &
+                        `_RFBING5` %in% c("1", "2") &
+                        INCOME3 %in% c("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11") &
+                        EXERANY2 %in% c("1", "2") &
+                        CHCKDNY2 %in% c("1", "2") &
+                        HAVARTH5 %in% c("1", "2") &
+                        TOLDHI3 %in% c("1", "2") &
+                        `_RFHYPE6` %in% c("1", "2") &
+                        CVDSTRK3 %in% c("1", "2") &
+                        ASTHMA3 %in% c("1", "2") &
+                        (`MENTHLTH` >= 1 & `MENTHLTH` <= 30 | `MENTHLTH` == 88) &
+                        `_RACE` %in% c("1", "2", "3", "4", "5", "6", "7", "8") &
+                        EDUCA %in% c("1", "2", "3", "4", "5", "6") &
+                        !(FRUIT2 %in% c(777, 999)) & !is.na(FRUIT2) &
+                        !(FVGREEN1 %in% c(777, 999)) & !is.na(FVGREEN1) )
+
+# Update column names
+names(clean_dataset) <- c("SEX", "AGE", "WEIGHT", "HEIGHT", "SMOK", "DRINK", "INCOME",
+                          "EXERCISE", "KIDNEY", "ARTHRITIS", "HIGH_CHOLESTEROL", "HIGH_BLOOD_PRESSURE",
+                          "STROKE", "ASTHMA", "MENTAL", "RACE", "EDUCATION", "FRUIT", 
+                          "DARK_GREEN_VEG", "y")
+
+# Convert HEIGHT3 from feet/inches to centimeters and round to integer
+convert_height_to_cm <- function(height) {
+  feet <- as.integer(height / 100)  # Extract feet
+  inches <- height %% 100           # Extract inches
+  return(as.integer(round(feet * 30.48 + inches * 2.54)))  # Convert and round to integer
+}
+
+# Apply the conversion function to HEIGHT
+clean_dataset$HEIGHT <- sapply(clean_dataset$HEIGHT, convert_height_to_cm)
+
+# Convert _MICHD to binary factor (1: yes, 0: no)
+clean_dataset$y <- factor(ifelse(clean_dataset$y == 2, 0, 1), labels = c("no", "yes"))
+
+# Convert categorical variables to factors with meaningful labels
+clean_dataset$SEX <- factor(clean_dataset$SEX, levels = c(1, 2), labels = c("MALE", "FEMALE"))
+clean_dataset$SMOK <- factor(clean_dataset$SMOK, levels = c(1, 2), labels = c("_NO", "_YES"))
+clean_dataset$DRINK <- factor(clean_dataset$DRINK, levels = c(1, 2), labels = c("_NO", "_YES"))
+clean_dataset$EXERCISE <- factor(clean_dataset$EXERCISE, levels = c(1, 2), labels = c("_YES", "_NO"))
+clean_dataset$KIDNEY <- factor(clean_dataset$KIDNEY, levels = c(1, 2), labels = c("_YES", "_NO"))
+clean_dataset$ARTHRITIS <- factor(clean_dataset$ARTHRITIS, levels = c(1, 2), labels = c("_YES", "_NO"))
+clean_dataset$HIGH_CHOLESTEROL <- factor(clean_dataset$HIGH_CHOLESTEROL, levels = c(1, 2), labels = c("_YES", "_NO"))
+clean_dataset$HIGH_BLOOD_PRESSURE <- factor(clean_dataset$HIGH_BLOOD_PRESSURE, levels = c(1, 2), labels = c("_NO", "_YES"))
+clean_dataset$STROKE <- factor(clean_dataset$STROKE, levels = c(1, 2), labels = c("_YES", "_NO"))
+clean_dataset$ASTHMA <- factor(clean_dataset$ASTHMA, levels = c(1, 2), labels = c("_YES", "_NO"))
+
+clean_dataset$INCOME <- factor(clean_dataset$INCOME, levels = 1:11,
+                                labels = c("less than $20,000", "less than $20,000", "less than $20,000",
+                                           "$20,000-$35,000", "$20,000-$35,000",
+                                           "$50,000-$75,000", "$50,000-$75,000", "$75,000 or more", "$75,000 or more", "$75,000 or more", "$75,000 or more"))
+clean_dataset$RACE <- factor(clean_dataset$RACE, levels = 1:8, 
+                             labels = c("White", "Black", "Indigenous", "Asian-Pacific", "Asian-Pacific",
+                                        "Other race", "Other race", "Hispanic"))
+clean_dataset$EDUCATION <- factor(clean_dataset$EDUCATION, levels = 1:6,
+                                  labels = c("Never", "Elementary", "High school", "High school",
+                                             "College or technical school", "College or technical school"))
+
+
+
+convert_to_monthly <- function(var) {
+  var[var == 555 | var == 300] <- 0
+  var[var >= 101 & var <= 199] <- (var[var >= 101 & var <= 199] - 100) * 30
+  var[var >= 201 & var <= 299] <- (var[var >= 201 & var <= 299] - 200) * 4.33
+  var[var >= 301 & var <= 399] <- var[var >= 301 & var <= 399] - 300
+  return(as.integer(var))
+}
+
+clean_dataset$FRUIT <- convert_to_monthly(clean_dataset$FRUIT)
+clean_dataset <- subset(clean_dataset, FRUIT <= 200)
+
+clean_dataset$DARK_GREEN_VEG <- convert_to_monthly(clean_dataset$DARK_GREEN_VEG)
+clean_dataset <- subset(clean_dataset, DARK_GREEN_VEG <= 150)
+
+clean_dataset$MENTAL <- ifelse(clean_dataset$MENTAL == 88, 0, clean_dataset$MENTAL)
+
+
+```
+
+
+```{r}
+colSums(is.na(clean_dataset))
+
+```
+
+```{r}
+  
+
+sampled_data <- clean_dataset
+
+
+```
+
+
+```{r}
+
+set.seed(2025)  # Set random seed
+
+# Total number of rows in the dataset
+n <- nrow(sampled_data)
+
+# Indices for training set samples
+train_indices <- sample(1:n, size = 0.7 * n)
+
+# Split the dataset
+train_data <- sampled_data[train_indices, ]  # Training set
+test_data <- sampled_data[-train_indices, ]  # Test set
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+
+# XGBoost parameter grid
+xgb_grid <- expand.grid(
+  nrounds = c(50, 100),
+  max_depth = c(4, 6, 8),
+  eta = c(0.01, 0.1),
+  gamma = 0,              # Fixed gamma
+  colsample_bytree = 0.8, # Fixed column sampling
+  min_child_weight = 1,   # Fixed minimum child weight
+  subsample = 0.8         # Fixed sample sampling
+)
+
+# XGBoost cross-validation
+set.seed(123)
+xgb_tune <- train(
+  y ~ ., data = train_data,
+  method = "xgbTree",
+  tuneGrid = xgb_grid,
+  trControl = trainControl(method = "cv", number = 5)
+)
+
+# Display the best parameters
+print(xgb_tune$bestTune)
+```
+
+
+
+(Shapley Additive Explanations) values help interpret the model by measuring how much each feature contributes to a prediction.
+```{r}
+
+# XGBoost Modeling
+
+# Convert factor columns to numeric
+train_matrix <- model.matrix(y ~ . - 1, data = train_data)
+train_label <- as.numeric(train_data$y) - 1
+
+# Create DMatrix
+train_dmatrix <- xgb.DMatrix(data = train_matrix, label = train_label)
+
+# Train XGBoost model
+xgb_model <- xgboost(
+  data = train_dmatrix,
+  max.depth = 6,
+  eta = 0.1,
+  nrounds = 100,
+  objective = "binary:logistic",
+  eval_metric = "auc"
+)
+
+# Convert test set
+test_matrix <- model.matrix(y ~ . - 1, data = test_data)
+
+# Compute SHAP values
+shp <- shapviz(xgb_model, X_pred = test_matrix, X = test_matrix)
+
+# Plot SHAP summary plot
+sv_importance(shp, kind = "beeswarm")
+
+# Plot feature importance
+sv_importance(shp, fill = "#0085FF")
+
+
+```
+
+```{r}
+library(xgboost)
+library(shapviz)
+library(data.table)
+library(DT)
+
+
+shp <- shapviz(xgb_model, X_pred = test_matrix, X = test_matrix)
+
+
+shap_values <- as.data.frame(shp$S)
+
+
+shap_means <- colMeans(abs(shap_values))
+
+
+shap_summary <- data.frame(Feature = names(shap_means), Mean_SHAP = shap_means)
+shap_summary <- shap_summary[order(-shap_summary$Mean_SHAP), ]
+
+
+shap_top15 <- shap_summary[1:15, ]
+
+
+print(shap_top15)
+
+
+datatable(shap_top15, options = list(pageLength = 15))
+```
+
+
