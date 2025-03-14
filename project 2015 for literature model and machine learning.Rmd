@@ -247,6 +247,9 @@ table(train_data_smote$y)
 
 #logistic regression without interaction
 ```{r}
+# If already run the project 2015 for baseline and statistical model.Rmd then remove the y_numeric column before Machine learning.
+train_data$y_numeric <- NULL
+
 # Big model without interactions
 big_model_no_interaction <- glm(
   y ~ SEX + AGE + WEIGHT + HEIGHT + RACE + EDUCATION + INCOME +
@@ -320,6 +323,8 @@ summary(big_model_i_s)
 #Decision tree 
 
 ```{r}
+# If already run the project 2015 for baseline and statistical model.Rmd then remove the y_numeric column before Machine learning.
+train_data$y_numeric <- NULL
 
 # Decision tree parameter grid
 tree_grid <- expand.grid(cp = seq(0.001, 0.1, by = 0.01))
